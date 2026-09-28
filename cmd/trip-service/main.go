@@ -57,8 +57,12 @@ func main() {
 	handler := tripservice.NewHTTPHandler(tripService, pool)
 
 	server := &http.Server{
-		Addr: config.HttpAddress,
-		Handler: handler.Routes(),
+		Addr:              config.HttpAddress,
+		Handler:           handler.Routes(),
+		ReadTimeout:       config.HTTPReadTimeout,
+		ReadHeaderTimeout: config.HTTPReadHeaderTimeout,
+		WriteTimeout:      config.HTTPWriteTimeout,
+		IdleTimeout:       config.HTTPIdleTimeout,
 	}
 
 	serverErrors := make(chan error, 1)
@@ -70,7 +74,7 @@ func main() {
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("HTTP server failed: %v", err)
-			
+
 			return
 		}
 

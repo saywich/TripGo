@@ -10,6 +10,10 @@ import (
 
 var requiredVariables = [...]string{
 	"HTTP_ADDR",
+	"HTTP_READ_TIMEOUT",
+	"HTTP_READ_HEADER_TIMEOUT",
+	"HTTP_WRITE_TIMEOUT",
+	"HTTP_IDLE_TIMEOUT",
 	"LOG_LEVEL",
 	"SHUTDOWN_TIMEOUT",
 	"DATABASE_URL",
@@ -22,6 +26,10 @@ var requiredVariables = [...]string{
 
 type Config struct {
 	HttpAddress             string
+	HTTPReadTimeout         time.Duration
+	HTTPReadHeaderTimeout   time.Duration
+	HTTPWriteTimeout        time.Duration
+	HTTPIdleTimeout         time.Duration
 	DatabaseUrl             string
 	LogLevel                string
 	ShutdownTimeout         time.Duration
@@ -68,8 +76,16 @@ func (c *Config) AssignValue(name, value string) error {
 		err = assignInt(&c.DatabaseMaxConns, value)
 	case "DATABASE_MIN_CONNS":
 		err = assignInt(&c.DatabaseMinConns, value)
+	case "HTTP_READ_TIMEOUT":
+		err = assignDuration(&c.HTTPReadTimeout, value)
 	case "DATABASE_MAX_CONN_LIFETIME":
 		err = assignDuration(&c.DatabaseMaxConnLifetime, value)
+	case "HTTP_READ_HEADER_TIMEOUT":
+		err = assignDuration(&c.HTTPReadHeaderTimeout, value)
+	case "HTTP_WRITE_TIMEOUT":
+		err = assignDuration(&c.HTTPWriteTimeout, value)
+	case "HTTP_IDLE_TIMEOUT":
+		err = assignDuration(&c.HTTPIdleTimeout, value)
 	case "SHUTDOWN_TIMEOUT":
 		err = assignDuration(&c.ShutdownTimeout, value)
 	case "DATABASE_CONNECT_TIMEOUT":
@@ -112,6 +128,18 @@ func ParseEnv() (*Config, error) {
 	}
 	if config.ShutdownTimeout <= 0 {
 		return nil, fmt.Errorf("Environment parse error: SHUTDOWN_TIMEOUT must be greater than zero")
+	}
+	if config.HTTPReadTimeout <= 0 {
+		return nil, fmt.Errorf("Environment parse error: HTTP_READ_TIMEOUT must be greater than zero")
+	}
+	if config.HTTPReadHeaderTimeout <= 0 {
+		return nil, fmt.Errorf("Environment parse error: HTTP_READ_HEADER_TIMEOUT must be greater than zero")
+	}
+	if config.HTTPWriteTimeout <= 0 {
+		return nil, fmt.Errorf("Environment parse error: HTTP_WRITE_TIMEOUT must be greater than zero")
+	}
+	if config.HTTPIdleTimeout <= 0 {
+		return nil, fmt.Errorf("Environment parse error: HTTP_IDLE_TIMEOUT must be greater than zero")
 	}
 	if config.DatabaseQueryTimeout <= 0 {
 		return nil, fmt.Errorf("Environment parse error: DATABASE_QUERY_TIMEOUT must be greater than zero")
