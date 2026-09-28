@@ -48,21 +48,23 @@ func main() {
 	txManager := tripservice.NewTransactionManager(pool)
 	tripRepository := tripservice.NewTripRepository(pool)
 	tripStatusHistoryRepository := tripservice.NewTripStatusHistoryRepository(pool)
+	idempotencyRepository := tripservice.NewIdempotencyRepository(pool)
 	tripService := tripservice.NewTripService(
 		txManager,
 		tripRepository,
 		tripStatusHistoryRepository,
 	)
+	idempotencyMiddleware := tripservice.NewIdempotencyMiddleware(txManager, idempotencyRepository)
 
-	handler := tripservice.NewHTTPHandler(tripService, pool)
+	handler := tripservice.NewHTTPHandler(tripService, pool, idempotencyMiddleware.Wrap)
 
 	server := &http.Server{
-		Addr:              config.HttpAddress,
-		Handler:           handler.Routes(),
-		ReadTimeout:       config.HTTPReadTimeout,
+		Addr: config.HttpAddress,
+		Handler: handler.Routes(),
+		ReadTimeout: config.HTTPReadTimeout,
 		ReadHeaderTimeout: config.HTTPReadHeaderTimeout,
-		WriteTimeout:      config.HTTPWriteTimeout,
-		IdleTimeout:       config.HTTPIdleTimeout,
+		WriteTimeout: config.HTTPWriteTimeout,
+		IdleTimeout: config.HTTPIdleTimeout,
 	}
 
 	serverErrors := make(chan error, 1)

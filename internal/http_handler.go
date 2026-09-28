@@ -14,7 +14,8 @@ import (
 
 type HTTPHandler struct {
 	tripService *TripService
-	database    readinessChecker
+	database readinessChecker
+	createTripIdempotency func(http.Handler) http.Handler
 }
 
 type readinessChecker interface {
@@ -24,8 +25,13 @@ type readinessChecker interface {
 func NewHTTPHandler(
 	tripService *TripService,
 	database readinessChecker,
+	idempotency func(http.Handler) http.Handler,
 ) *HTTPHandler {
-	return &HTTPHandler{tripService: tripService, database: database}
+	return &HTTPHandler{
+		tripService: tripService,
+		database: database,
+		createTripIdempotency: idempotency,
+	}
 }
 
 func (h *HTTPHandler) Routes() http.Handler {
@@ -33,7 +39,13 @@ func (h *HTTPHandler) Routes() http.Handler {
 
 	router.Get("/health", h.health)
 	router.Get("/ready", h.ready)
-	router.Post("/api/v1/trips", h.createTrip)
+
+	createTripHandler := http.Handler(http.HandlerFunc(h.createTrip))
+	if h.createTripIdempotency != nil {
+		createTripHandler = h.createTripIdempotency(createTripHandler)
+	}
+	router.Method(http.MethodPost, "/api/v1/trips", createTripHandler)
+
 	router.Get("/api/v1/trips/{tripId}", h.getTrip)
 	router.Post("/api/v1/trips/{tripId}/finish", h.finishTrip)
 
@@ -154,10 +166,10 @@ func writeProblem(w http.ResponseWriter, status int, title, code, detail string)
 	w.WriteHeader(status)
 
 	_ = json.NewEncoder(w).Encode(api.Problem{
-		Type:   "about:blank",
-		Title:  title,
+		Type: "about:blank",
+		Title: title,
 		Status: int32(status),
-		Code:   code,
+		Code: code,
 		Detail: &detail,
 	})
 }
