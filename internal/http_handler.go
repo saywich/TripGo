@@ -102,36 +102,42 @@ func (h *HTTPHandler) finishTrip(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) createTrip(w http.ResponseWriter, r *http.Request) {
-	var data api.TripData
-
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&data); err != nil {
-		writeProblem(w, http.StatusBadRequest, "Bad Request", "invalid_request", "Request body must be a valid TripData JSON object")
+	tripData, err := decodeTripData(r.Body)
+	if err != nil {
+		writeProblem(
+			w,
+			http.StatusBadRequest,
+			"Bad Request",
+			"invalid_request",
+			err.Error(),
+		)
 		return
 	}
 
-	if data.UserId == (api.TripId{}) || data.DriverId == (api.TripId{}) || data.Price < 0 ||
-		data.StartPoint.Latitude < -90 || data.StartPoint.Latitude > 90 ||
-		data.StartPoint.Longitude < -180 || data.StartPoint.Longitude > 180 ||
-		data.EndPoint.Latitude < -90 || data.EndPoint.Latitude > 90 ||
-		data.EndPoint.Longitude < -180 || data.EndPoint.Longitude > 180 {
-		writeProblem(w, http.StatusBadRequest, "Bad Request", "invalid_request", "Request contains missing or invalid trip fields")
-		return
-	}
-
-	trip, err := h.tripService.Create(r.Context(), data)
+	trip, err := h.tripService.Create(r.Context(), tripData)
 	if err != nil {
 		if errors.Is(err, ErrDriverBusy) {
-			writeProblem(w, http.StatusConflict, "Driver busy", "driver_busy", "Driver already has an active trip")
+			writeProblem(
+				w,
+				http.StatusConflict,
+				"Driver busy",
+				"driver_busy",
+				"Driver already has an active trip",
+			)
 			return
 		}
-		writeProblem(w, http.StatusInternalServerError, "Internal Server Error", "internal_error", err.Error())
+		writeProblem(
+			w,
+			http.StatusInternalServerError,
+			"Internal Server Error",
+			"internal_error",
+			"An error occured while creating trip",
+		)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Location", "/api/v1/trips/"+trip.Id.String())
+	w.Header().Set("Location", "/api/v1/trips/" + trip.Id.String())
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(trip)
 }

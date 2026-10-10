@@ -2,22 +2,27 @@ package tripservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	sq "github.com/Masterminds/squirrel"
 	api "github.com/saywich/tripgo/internal/generated"
 )
 
+var ErrDriverBusy = errors.New("driver already has an active trip")
+
 type TripRepository struct {
-	pool *pgxpool.Pool
+	pool         *pgxpool.Pool
+	queryTimeout time.Duration
 }
 
-func NewTripRepository(pool *pgxpool.Pool) *TripRepository {
-	return &TripRepository{pool: pool}
+func NewTripRepository(pool *pgxpool.Pool, queryTimeout time.Duration) *TripRepository {
+	return &TripRepository{pool: pool, queryTimeout: queryTimeout}
 }
 
 func getExecutor(ctx context.Context, pool *pgxpool.Pool) DBTX {
@@ -36,7 +41,7 @@ func (r *TripRepository) Create(
 
 	tripId, err := uuid.NewRandom()
 	if err != nil {
-		return api.Trip{}, fmt.Errorf("Query execution error: %w", err)
+		return api.Trip{}, fmt.Errorf("create trip: %w", err)
 	}
 
 	query, args, err := sq.StatementBuilder.
@@ -74,12 +79,15 @@ func (r *TripRepository) Create(
 		ToSql()
 
 	if err != nil {
-		return api.Trip{}, fmt.Errorf("Query execution error: %w", err)
+		return api.Trip{}, fmt.Errorf("create trip: %w", err)
 	}
 
 	db := getExecutor(ctx, r.pool)
 
-	err = db.QueryRow(ctx, query, args...).Scan(
+	deadlineCtx, cancel := context.WithTimeout(ctx, r.queryTimeout)
+	defer cancel()
+
+	err = db.QueryRow(deadlineCtx, query, args...).Scan(
 		&trip.Id,
 		&trip.UserId,
 		&trip.DriverId,
@@ -94,7 +102,19 @@ func (r *TripRepository) Create(
 	)
 
 	if err != nil {
-		return api.Trip{}, fmt.Errorf("Query execution error: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return api.Trip{}, fmt.Errorf("create trip: cancelled by timeout")
+		}
+
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) &&
+			pgErr.Code == "23505" &&
+			pgErr.ConstraintName == "trips_one_active_trip_per_driver_idx" {
+
+			return api.Trip{}, ErrDriverBusy
+		}
+
+		return api.Trip{}, fmt.Errorf("create trip: %w", err)
 	}
 
 	return trip, nil
@@ -126,11 +146,15 @@ func (r *TripRepository) SearchById(
 		ToSql()
 
 	if err != nil {
-		return api.Trip{}, fmt.Errorf("build trip search query: %w", err)
+		return api.Trip{}, fmt.Errorf("search trip by id: %w", err)
 	}
 
 	db := getExecutor(ctx, r.pool)
-	err = db.QueryRow(ctx, query, args...).Scan(
+
+	deadlineCtx, cancel := context.WithTimeout(ctx, r.queryTimeout)
+	defer cancel()
+
+	err = db.QueryRow(deadlineCtx, query, args...).Scan(
 		&trip.Id,
 		&trip.UserId,
 		&trip.DriverId,
@@ -145,7 +169,11 @@ func (r *TripRepository) SearchById(
 	)
 
 	if err != nil {
-		return api.Trip{}, fmt.Errorf("search trip by id: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return api.Trip{}, fmt.Errorf("search trip by id: cancelled by timeout")
+		} else {
+			return api.Trip{}, fmt.Errorf("search trip by id: %w", err)
+		}
 	}
 
 	return trip, nil
@@ -172,11 +200,15 @@ func (r *TripRepository) Finish(
 		ToSql()
 
 	if err != nil {
-		return api.Trip{}, fmt.Errorf("build finish trip query: %w", err)
+		return api.Trip{}, fmt.Errorf("finish trip: %w", err)
 	}
 
 	db := getExecutor(ctx, r.pool)
-	err = db.QueryRow(ctx, query, args...).Scan(
+
+	deadlineCtx, cancel := context.WithTimeout(ctx, r.queryTimeout)
+	defer cancel()
+
+	err = db.QueryRow(deadlineCtx, query, args...).Scan(
 		&trip.Id,
 		&trip.UserId,
 		&trip.DriverId,
@@ -191,7 +223,11 @@ func (r *TripRepository) Finish(
 	)
 
 	if err != nil {
-		return api.Trip{}, fmt.Errorf("finish trip: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return api.Trip{}, fmt.Errorf("finish trip: cancelled by timeout")
+		} else {
+			return api.Trip{}, fmt.Errorf("finish trip: %w", err)
+		}
 	}
 
 	return trip, nil

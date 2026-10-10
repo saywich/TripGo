@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 	api "github.com/saywich/tripgo/internal/generated"
 )
@@ -13,7 +12,6 @@ import (
 var (
 	ErrTripNotFound = errors.New("trip not found")
 	ErrTripAlreadyCompleted = errors.New("trip already completed")
-	ErrDriverBusy = errors.New("driver already has an active trip")
 )
 
 type tripCreator interface {
@@ -30,6 +28,13 @@ type tripStatusHistoryCreator interface {
 		ctx context.Context,
 		tripId openapi_types.UUID,
 		fromStatus api.TripStatus,
+		toStatus api.TripStatus,
+		reason string,
+	) error
+
+	CreateInitial(
+		ctx context.Context,
+		tripId openapi_types.UUID,
 		toStatus api.TripStatus,
 		reason string,
 	) error
@@ -62,20 +67,12 @@ func (s *TripService) Create(
 	err := s.txManager.Do(ctx, func(ctx context.Context) error {
 		createdTrip, err := s.tripRepository.Create(ctx, data)
 		if err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && 
-				pgErr.Code == "23505" && 
-				pgErr.ConstraintName == "trips_one_active_trip_per_driver_idx" {
-				return ErrDriverBusy
-			}
-
 			return err
 		}
 
-		err = s.tripStatusHistoryRepository.Create(
+		err = s.tripStatusHistoryRepository.CreateInitial(
 			ctx,
 			createdTrip.Id,
-			createdTrip.Status,
 			api.Active,
 			"Trip created",
 		)

@@ -22,6 +22,7 @@ var requiredVariables = [...]string{
 	"DATABASE_MAX_CONN_LIFETIME",
 	"DATABASE_CONNECT_TIMEOUT",
 	"DATABASE_QUERY_TIMEOUT",
+	"IDEMPOTENCY_KEY_RETENTION",
 }
 
 type Config struct {
@@ -38,6 +39,7 @@ type Config struct {
 	DatabaseMaxConnLifetime time.Duration
 	DatabaseConnectTimeout  time.Duration
 	DatabaseQueryTimeout    time.Duration
+	IdempotencyKeyRetention time.Duration
 }
 
 func assignDuration(field *time.Duration, value string) error {
@@ -92,6 +94,8 @@ func (c *Config) AssignValue(name, value string) error {
 		err = assignDuration(&c.DatabaseConnectTimeout, value)
 	case "DATABASE_QUERY_TIMEOUT":
 		err = assignDuration(&c.DatabaseQueryTimeout, value)
+	case "IDEMPOTENCY_KEY_RETENTION":
+		err = assignDuration(&c.IdempotencyKeyRetention, value)
 	default:
 		return fmt.Errorf("Unknown variable %s", name)
 	}
@@ -143,6 +147,9 @@ func ParseEnv() (*Config, error) {
 	}
 	if config.DatabaseQueryTimeout <= 0 {
 		return nil, fmt.Errorf("Environment parse error: DATABASE_QUERY_TIMEOUT must be greater than zero")
+	}
+	if config.IdempotencyKeyRetention <= 0 {
+		return nil, fmt.Errorf("Environment parse error: IDEMPOTENCY_KEY_RETENTION must be greater than zero")
 	}
 
 	return &config, nil

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/saywich/tripgo/internal"
@@ -30,6 +31,7 @@ func main() {
 	poolConfig.MaxConns = int32(config.DatabaseMaxConns)
 	poolConfig.MinConns = int32(config.DatabaseMinConns)
 	poolConfig.MaxConnLifetime = config.DatabaseMaxConnLifetime
+	poolConfig.ConnConfig.ConnectTimeout = config.DatabaseConnectTimeout
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
@@ -46,9 +48,29 @@ func main() {
 	}
 
 	txManager := tripservice.NewTransactionManager(pool)
-	tripRepository := tripservice.NewTripRepository(pool)
-	tripStatusHistoryRepository := tripservice.NewTripStatusHistoryRepository(pool)
-	idempotencyRepository := tripservice.NewIdempotencyRepository(pool)
+	tripRepository := tripservice.NewTripRepository(
+		pool, config.DatabaseQueryTimeout)
+	tripStatusHistoryRepository := tripservice.NewTripStatusHistoryRepository(
+		pool, config.DatabaseQueryTimeout)
+	idempotencyRepository := tripservice.NewIdempotencyRepository(
+		pool, config.DatabaseQueryTimeout, config.IdempotencyKeyRetention)
+	if err := idempotencyRepository.CleanupExpired(ctx); err != nil {
+		log.Printf("cleanup expired idempotency keys: %v", err)
+	}
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := idempotencyRepository.CleanupExpired(ctx); err != nil {
+					log.Printf("cleanup expired idempotency keys: %v", err)
+				}
+			}
+		}
+	}()
 	tripService := tripservice.NewTripService(
 		txManager,
 		tripRepository,
@@ -59,12 +81,12 @@ func main() {
 	handler := tripservice.NewHTTPHandler(tripService, pool, idempotencyMiddleware.Wrap)
 
 	server := &http.Server{
-		Addr: config.HttpAddress,
-		Handler: handler.Routes(),
-		ReadTimeout: config.HTTPReadTimeout,
+		Addr:              config.HttpAddress,
+		Handler:           handler.Routes(),
+		ReadTimeout:       config.HTTPReadTimeout,
 		ReadHeaderTimeout: config.HTTPReadHeaderTimeout,
-		WriteTimeout: config.HTTPWriteTimeout,
-		IdleTimeout: config.HTTPIdleTimeout,
+		WriteTimeout:      config.HTTPWriteTimeout,
+		IdleTimeout:       config.HTTPIdleTimeout,
 	}
 
 	serverErrors := make(chan error, 1)

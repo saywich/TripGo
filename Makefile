@@ -2,6 +2,12 @@
 
 export
 
+export HTTP_READ_TIMEOUT=5s
+export HTTP_READ_HEADER_TIMEOUT=2s
+export HTTP_WRITE_TIMEOUT=10s
+export HTTP_IDLE_TIMEOUT=60s
+export IDEMPOTENCY_KEY_RETENTION=24h
+
 .PHONY: migrate migrate-down migrate-status run test lint generate
 
 migrate:

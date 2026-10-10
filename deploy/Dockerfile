@@ -20,5 +20,4 @@ COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build /out/trip-service /trip-service
 
 USER 65532:65532
-EXPOSE 8080
 ENTRYPOINT ["/trip-service"]

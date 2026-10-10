@@ -2,7 +2,9 @@ package tripservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	sq "github.com/Masterminds/squirrel"
@@ -12,12 +14,23 @@ import (
 
 type TripStatusHistoryRepository struct {
 	pool *pgxpool.Pool
+	queryTimeout time.Duration
 }
 
 func NewTripStatusHistoryRepository(
 	pool *pgxpool.Pool,
+	queryTimeout time.Duration,
 ) *TripStatusHistoryRepository {
-	return &TripStatusHistoryRepository{pool: pool}
+	return &TripStatusHistoryRepository{pool: pool, queryTimeout: queryTimeout}
+}
+
+func (r *TripStatusHistoryRepository) CreateInitial(
+	ctx context.Context,
+	tripId openapi_types.UUID,
+	toStatus api.TripStatus,
+	reason string,
+) error {
+	return r.create(ctx, tripId, nil, toStatus, reason)
 }
 
 func (r *TripStatusHistoryRepository) Create(
@@ -27,7 +40,17 @@ func (r *TripStatusHistoryRepository) Create(
 	toStatus api.TripStatus,
 	reason string,
 ) error {
-	query, args, err := sq.StatementBuilder.
+	return r.create(ctx, tripId, &fromStatus, toStatus, reason)
+}
+
+func (r *TripStatusHistoryRepository) create(
+	ctx context.Context,
+	tripId openapi_types.UUID,
+	fromStatus *api.TripStatus,
+	toStatus api.TripStatus,
+	reason string,
+) error {
+	builder := sq.StatementBuilder.
 		PlaceholderFormat(sq.Dollar).
 		Insert("trip_status_history").
 		Columns(
@@ -35,25 +58,43 @@ func (r *TripStatusHistoryRepository) Create(
 			"from_status",
 			"to_status",
 			"reason",
-		).
-		Values(
+		)
+
+	if fromStatus == nil {
+		builder = builder.Values(
 			tripId,
-			fromStatus,
+			nil,
 			toStatus,
 			reason,
-		).
-		ToSql()
+		)
+	} else {
+		builder = builder.Values(
+			tripId,
+			*fromStatus,
+			toStatus,
+			reason,
+		)
+	}
+
+	query, args, err := builder.ToSql()
 
 	if err != nil {
-		return fmt.Errorf("Query execution error: %w", err)
+		return fmt.Errorf("trip status history create: %w", err)
 	}
 
 	db := getExecutor(ctx, r.pool)
 
-	_, err = db.Exec(ctx, query, args...)
+	deadlineCtx, cancel := context.WithTimeout(ctx, r.queryTimeout)
+	defer cancel()
+
+	_, err = db.Exec(deadlineCtx, query, args...)
 
 	if err != nil {
-		return fmt.Errorf("Query execution error: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("trip status history create: cancelled by timeout")
+		} else {
+			return fmt.Errorf("trip status history create: %w", err)
+		}
 	}
 
 	return nil

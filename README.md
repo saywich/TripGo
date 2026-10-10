@@ -40,6 +40,7 @@ tripgoctl connect
 | `DATABASE_MAX_CONN_LIFETIME` | Максимальное время жизни соединения | `30m` |
 | `DATABASE_CONNECT_TIMEOUT` | Таймаут проверки подключения при старте | `5s` |
 | `DATABASE_QUERY_TIMEOUT` | Таймаут запросов к PostgreSQL | `3s` |
+| `IDEMPOTENCY_KEY_RETENTION` | Срок хранения ключей идемпотентности | `24h` |
 
 Актуальный шаблон находится в [.env.example](.env.example). Значения пула и таймаутов должны быть положительными и подходить выбранному окружению.
 
@@ -61,9 +62,10 @@ make run
 Сборка использует многоступенчатый Dockerfile: приложение компилируется в Go builder-образе, а итоговый образ содержит только статический бинарник и сертификаты CA. Контейнер запускается от непривилегированного пользователя.
 
 ```bash
-docker build -t tripgo-trip-service .
-docker run --rm --env-file .env -p 8080:8080 tripgo-trip-service
+docker compose --env-file .env -f deploy/compose.yaml up --build
 ```
+
+Compose reads the root `.env` for port interpolation and passes its variables to the container at runtime; the file is not copied into the image. The published host port is taken from `HTTP_ADDR` (for example, `:8080` publishes port `8080`). Copy `.env.example` to `.env` and configure `DATABASE_URL` before starting. To stop the service, run `docker compose --env-file .env -f deploy/compose.yaml down`.
 
 Перед запуском в контейнере проверьте `DATABASE_URL`: адрес `localhost` внутри контейнера указывает на сам контейнер. Используйте имя контейнера PostgreSQL в общей Docker-сети или доступный с хоста адрес базы.
 
@@ -71,7 +73,7 @@ docker run --rm --env-file .env -p 8080:8080 tripgo-trip-service
 
 | Метод и путь | Поведение |
 |---|---|
-| `POST /api/v1/trips` | Создаёт активную поездку и запись истории статуса. Возвращает `201` и `Location`. Если у водителя уже есть активная поездка, возвращает `409` с кодом `driver_busy`. При повторе с тем же `Idempotency-Key` и телом возвращает сохранённый ответ с `200`; тот же ключ с другим телом даёт `409 idempotency_conflict`. |
+| `POST /api/v1/trips` | Создаёт активную поездку и запись истории статуса. Возвращает `201` и `Location`. Если у водителя уже есть активная поездка, возвращает `409` с кодом `driver_busy`. При повторе с тем же `Idempotency-Key` и телом в течение `IDEMPOTENCY_KEY_RETENTION` возвращает сохранённый ответ с `200`; тот же ключ с другим телом даёт `409 idempotency_conflict`. По истечении срока ключ можно использовать повторно. |
 | `GET /api/v1/trips/{tripId}` | Возвращает поездку; отвечает `400` для некорректного UUID и `404`, если поездка не найдена. |
 | `POST /api/v1/trips/{tripId}/finish` | Завершает активную поездку и записывает переход статуса в той же транзакции. Повторное завершение возвращает `409`, неизвестный ID — `404`. |
 | `GET /health` | Проверка liveness процесса. |

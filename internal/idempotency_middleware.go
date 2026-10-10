@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 
 	"github.com/google/uuid"
-	api "github.com/saywich/tripgo/internal/generated"
 )
 
 type IdempotencyMiddleware struct {
@@ -38,7 +37,7 @@ type responseSnapshot struct {
 func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		keys := r.Header.Values("Idempotency-Key")
-		
+
 		if len(keys) == 0 {
 			next.ServeHTTP(w, r)
 			return
@@ -63,8 +62,7 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 
 		canonicalBody, err := canonicalTripRequest(body)
 		if err != nil {
-			r.Body = io.NopCloser(bytes.NewReader(body))
-			next.ServeHTTP(w, r)
+			writeProblem(w, http.StatusBadRequest, "Bad Request", "invalid_request", "Request body must be a single valid JSON value")
 			return
 		}
 
@@ -84,7 +82,7 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 					writeProblem(
 						recorder,
 						http.StatusConflict,
-						"Idempotency conflict", 
+						"Idempotency conflict",
 						"idempotency_conflict",
 						"Idempotency-Key was already used with a different request body",
 					)
@@ -99,10 +97,10 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 				}
 
 				response = responseSnapshot{
-					status: http.StatusOK,
+					status:      http.StatusOK,
 					contentType: previous.ContentType,
-					location: previous.Location,
-					body: previous.ResponseBody,
+					location:    previous.Location,
+					body:        previous.ResponseBody,
 				}
 
 				return nil
@@ -110,6 +108,7 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 
 			request := r.Clone(ctx)
 			request.Body = io.NopCloser(bytes.NewReader(body))
+
 			recorder := httptest.NewRecorder()
 			next.ServeHTTP(recorder, request)
 			response = snapshotResponse(recorder)
@@ -152,15 +151,12 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 }
 
 func canonicalTripRequest(body []byte) ([]byte, error) {
-	var data api.TripData
-
-	decoder := json.NewDecoder(bytes.NewReader(body))
-
-	if err := decoder.Decode(&data); err != nil {
+	tripData, err := decodeTripData(bytes.NewReader(body))
+	if err != nil {
 		return nil, err
 	}
 
-	return json.Marshal(data)
+	return json.Marshal(tripData)
 }
 
 func snapshotResponse(recorder *httptest.ResponseRecorder) responseSnapshot {
@@ -171,9 +167,9 @@ func snapshotResponse(recorder *httptest.ResponseRecorder) responseSnapshot {
 	}
 
 	return responseSnapshot{
-		status: status,
+		status:      status,
 		contentType: recorder.Header().Get("Content-Type"),
-		location: recorder.Header().Get("Location"),
-		body: append([]byte(nil), recorder.Body.Bytes()...),
+		location:    recorder.Header().Get("Location"),
+		body:        append([]byte(nil), recorder.Body.Bytes()...),
 	}
 }
