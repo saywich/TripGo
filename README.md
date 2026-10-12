@@ -42,7 +42,7 @@ tripgoctl connect
 | `DATABASE_QUERY_TIMEOUT` | Таймаут запросов к PostgreSQL | `3s` |
 | `IDEMPOTENCY_KEY_RETENTION` | Срок хранения ключей идемпотентности | `24h` |
 
-Актуальный шаблон находится в [.env.example](.env.example). Значения пула и таймаутов должны быть положительными и подходить выбранному окружению.
+Актуальный шаблон находится в [.env.example](.env.example). Значения пула и таймаутов должны быть положительными.
 
 ## Миграции и запуск
 
@@ -62,12 +62,10 @@ make run
 Сборка использует многоступенчатый Dockerfile: приложение компилируется в Go builder-образе, а итоговый образ содержит только статический бинарник и сертификаты CA. Контейнер запускается от непривилегированного пользователя.
 
 ```bash
+docker build -f deploy/Dockerfile -t tripgo-trip-service .
+
 docker compose --env-file .env -f deploy/compose.yaml up --build
 ```
-
-Compose reads the root `.env` for port interpolation and passes its variables to the container at runtime; the file is not copied into the image. The published host port is taken from `HTTP_ADDR` (for example, `:8080` publishes port `8080`). Copy `.env.example` to `.env` and configure `DATABASE_URL` before starting. To stop the service, run `docker compose --env-file .env -f deploy/compose.yaml down`.
-
-Перед запуском в контейнере проверьте `DATABASE_URL`: адрес `localhost` внутри контейнера указывает на сам контейнер. Используйте имя контейнера PostgreSQL в общей Docker-сети или доступный с хоста адрес базы.
 
 ## Реализовано
 

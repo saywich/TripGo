@@ -44,9 +44,15 @@ func (r *IdempotencyRepository) Claim(
 
 	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, r.queryTimeout)
 	defer cleanupCancel()
-	_, err := db.Exec(cleanupCtx,
-		"DELETE FROM idempotency_requests WHERE key = $1 AND created_at < $2",
-		key, time.Now().UTC().Add(-r.retention))
+	cleanupQuery, cleanupArgs, err := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Delete("idempotency_requests").
+		Where(sq.Eq{"key": key}).
+		Where(sq.Lt{"created_at": time.Now().UTC().Add(-r.retention)}).
+		ToSql()
+	if err != nil {
+		return false, IdempotencyRecord{}, fmt.Errorf("build expired idempotency key cleanup query: %w", err)
+	}
+	_, err = db.Exec(cleanupCtx, cleanupQuery, cleanupArgs...)
 	if err != nil {
 		return false, IdempotencyRecord{}, fmt.Errorf("remove expired idempotency key: %w", err)
 	}
