@@ -1,4 +1,4 @@
-package tripservice
+package middleware
 
 import (
 	"bytes"
@@ -11,18 +11,21 @@ import (
 	"net/http/httptest"
 
 	"github.com/google/uuid"
+
+	"github.com/saywich/tripgo/internal/http/trip/create"
+	"github.com/saywich/tripgo/internal/model"
 )
 
 type IdempotencyMiddleware struct {
-	txManager  TxManager
-	repository *IdempotencyRepository
+	txManager  txManager
+	repository idempotencyRepository
 }
 
 var errIdempotencyResponseNotPersisted = errors.New("idempotency response is not persisted")
 
 func NewIdempotencyMiddleware(
-	txManager TxManager,
-	repository *IdempotencyRepository,
+	txManager txManager,
+	repository idempotencyRepository,
 ) *IdempotencyMiddleware {
 	return &IdempotencyMiddleware{txManager: txManager, repository: repository}
 }
@@ -40,29 +43,34 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 
 		if len(keys) == 0 {
 			next.ServeHTTP(w, r)
+
 			return
 		}
 
 		if len(keys) != 1 {
 			writeProblem(w, http.StatusBadRequest, "Bad Request", "invalid_request", "Idempotency-Key must be a single UUID")
+
 			return
 		}
 
 		key, err := uuid.Parse(keys[0])
 		if err != nil {
 			writeProblem(w, http.StatusBadRequest, "Bad Request", "invalid_request", "Idempotency-Key must be a valid UUID")
+
 			return
 		}
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			writeProblem(w, http.StatusBadRequest, "Bad Request", "invalid_request", "Could not read request body")
+
 			return
 		}
 
 		canonicalBody, err := canonicalTripRequest(body)
 		if err != nil {
 			writeProblem(w, http.StatusBadRequest, "Bad Request", "invalid_request", "Request body must be a single valid JSON value")
+
 			return
 		}
 
@@ -126,6 +134,7 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 
 			return errIdempotencyResponseNotPersisted
 		})
+
 		if err != nil && !errors.Is(err, errIdempotencyResponseNotPersisted) {
 			writeProblem(
 				w,
@@ -134,6 +143,7 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 				"internal_error",
 				"Internal server error",
 			)
+
 			return
 		}
 
@@ -151,7 +161,7 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 }
 
 func canonicalTripRequest(body []byte) ([]byte, error) {
-	tripData, err := decodeTripData(bytes.NewReader(body))
+	tripData, err := create.DecodeTripData(bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -172,4 +182,19 @@ func snapshotResponse(recorder *httptest.ResponseRecorder) responseSnapshot {
 		location:    recorder.Header().Get("Location"),
 		body:        append([]byte(nil), recorder.Body.Bytes()...),
 	}
+}
+
+type txManager interface {
+	Do(context.Context, func(context.Context) error) error
+}
+
+type idempotencyRepository interface {
+	Claim(context.Context, uuid.UUID, []byte, []byte) (bool, model.IdempotencyRecord, error)
+	Complete(context.Context, uuid.UUID, int, string, string, []byte) error
+}
+
+func writeProblem(w http.ResponseWriter, status int, title, code, detail string) {
+	w.Header().Set("Content-Type", "application/problem+json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"type": "about:blank", "status": status, "title": title, "code": code, "detail": detail})
 }

@@ -1,4 +1,4 @@
-package tripservice
+package config
 
 import (
 	"fmt"
@@ -26,12 +26,12 @@ var requiredVariables = [...]string{
 }
 
 type Config struct {
-	HttpAddress             string
+	HTTPAddress             string
 	HTTPReadTimeout         time.Duration
 	HTTPReadHeaderTimeout   time.Duration
 	HTTPWriteTimeout        time.Duration
 	HTTPIdleTimeout         time.Duration
-	DatabaseUrl             string
+	DatabaseURL             string
 	LogLevel                string
 	ShutdownTimeout         time.Duration
 	DatabaseMaxConns        int
@@ -69,9 +69,9 @@ func (c *Config) AssignValue(name, value string) error {
 
 	switch name {
 	case "HTTP_ADDR":
-		c.HttpAddress = value
+		c.HTTPAddress = value
 	case "DATABASE_URL":
-		c.DatabaseUrl = value
+		c.DatabaseURL = value
 	case "LOG_LEVEL":
 		c.LogLevel = value
 	case "DATABASE_MAX_CONNS":
@@ -97,11 +97,11 @@ func (c *Config) AssignValue(name, value string) error {
 	case "IDEMPOTENCY_KEY_RETENTION":
 		err = assignDuration(&c.IdempotencyKeyRetention, value)
 	default:
-		return fmt.Errorf("Unknown variable %s", name)
+		return fmt.Errorf("unknown variable %s", name)
 	}
 
 	if err != nil {
-		return fmt.Errorf("Unexpected value %s for %s: %w", value, name, err)
+		return fmt.Errorf("unexpected value %s for %s: %w", value, name, err)
 	}
 
 	return nil
@@ -112,44 +112,58 @@ func ParseEnv() (*Config, error) {
 
 	for _, variableName := range requiredVariables {
 		variableValue := strings.TrimSpace(os.Getenv(variableName))
+
 		if variableValue == "" {
-			return nil, fmt.Errorf("Environment parse error: Variable %s is required", variableName)
+			return nil, fmt.Errorf("environment parse error: variable %s is required", variableName)
 		}
 
 		if err := config.AssignValue(variableName, variableValue); err != nil {
-			return nil, fmt.Errorf("Environment parse error: %w", err)
+			return nil, fmt.Errorf("environment parse error: %w", err)
 		}
 	}
 
-	if config.DatabaseMaxConns <= 0 {
-		return nil, fmt.Errorf("Environment parse error: DATABASE_MAX_CONNS must be greater than zero")
+	if config.DatabaseMaxConns <= 0 || config.DatabaseMaxConns > 2147483647 {
+		return nil, fmt.Errorf("environment parse error: DATABASE_MAX_CONNS must be greater than zero")
 	}
+
 	if config.DatabaseMinConns < 0 || config.DatabaseMinConns > config.DatabaseMaxConns {
-		return nil, fmt.Errorf("Environment parse error: DATABASE_MIN_CONNS must be between zero and DATABASE_MAX_CONNS")
+		return nil, fmt.Errorf("environment parse error: DATABASE_MIN_CONNS must be between zero and DATABASE_MAX_CONNS")
 	}
+
 	if config.DatabaseMaxConnLifetime <= 0 {
-		return nil, fmt.Errorf("Environment parse error: DATABASE_MAX_CONN_LIFETIME must be greater than zero")
+		return nil, fmt.Errorf("environment parse error: DATABASE_MAX_CONN_LIFETIME must be greater than zero")
 	}
+
 	if config.ShutdownTimeout <= 0 {
-		return nil, fmt.Errorf("Environment parse error: SHUTDOWN_TIMEOUT must be greater than zero")
+		return nil, fmt.Errorf("environment parse error: SHUTDOWN_TIMEOUT must be greater than zero")
 	}
+
 	if config.HTTPReadTimeout <= 0 {
-		return nil, fmt.Errorf("Environment parse error: HTTP_READ_TIMEOUT must be greater than zero")
+		return nil, fmt.Errorf("environment parse error: HTTP_READ_TIMEOUT must be greater than zero")
 	}
+
 	if config.HTTPReadHeaderTimeout <= 0 {
-		return nil, fmt.Errorf("Environment parse error: HTTP_READ_HEADER_TIMEOUT must be greater than zero")
+		return nil, fmt.Errorf("environment parse error: HTTP_READ_HEADER_TIMEOUT must be greater than zero")
 	}
+
 	if config.HTTPWriteTimeout <= 0 {
-		return nil, fmt.Errorf("Environment parse error: HTTP_WRITE_TIMEOUT must be greater than zero")
+		return nil, fmt.Errorf("environment parse error: HTTP_WRITE_TIMEOUT must be greater than zero")
 	}
+
 	if config.HTTPIdleTimeout <= 0 {
-		return nil, fmt.Errorf("Environment parse error: HTTP_IDLE_TIMEOUT must be greater than zero")
+		return nil, fmt.Errorf("environment parse error: HTTP_IDLE_TIMEOUT must be greater than zero")
 	}
+
 	if config.DatabaseQueryTimeout <= 0 {
-		return nil, fmt.Errorf("Environment parse error: DATABASE_QUERY_TIMEOUT must be greater than zero")
+		return nil, fmt.Errorf("environment parse error: DATABASE_QUERY_TIMEOUT must be greater than zero")
 	}
+
 	if config.IdempotencyKeyRetention <= 0 {
-		return nil, fmt.Errorf("Environment parse error: IDEMPOTENCY_KEY_RETENTION must be greater than zero")
+		return nil, fmt.Errorf("environment parse error: IDEMPOTENCY_KEY_RETENTION must be greater than zero")
+	}
+
+	if config.DatabaseConnectTimeout <= 0 || config.DatabaseQueryTimeout <= 0 {
+		return nil, fmt.Errorf("database timeouts must be positive")
 	}
 
 	return &config, nil

@@ -8,7 +8,7 @@ export HTTP_WRITE_TIMEOUT=10s
 export HTTP_IDLE_TIMEOUT=60s
 export IDEMPOTENCY_KEY_RETENTION=24h
 
-.PHONY: migrate migrate-down migrate-status run test lint generate
+.PHONY: migrate migrate-down migrate-status run test test-integration lint generate
 
 migrate:
 	goose -dir ./migrations postgres "$(DATABASE_URL)" up
@@ -23,12 +23,17 @@ run:
 	go run ./cmd/trip-service $(ARGS)
 
 test:
-	go test -race -count=2 ./...
+	go test -race -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out
+
+test-integration:
+	go test -race -tags=integration ./internal/repository/...
 
 lint:
 	golangci-lint run
 
 generate:
+	go generate ./internal/usecase/... ./internal/http/trip/...
 	go tool oapi-codegen \
 	  -generate types,chi-server \
 	  -package api \

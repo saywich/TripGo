@@ -1,4 +1,4 @@
-package tripservice
+package transaction
 
 import (
 	"context"
@@ -6,23 +6,21 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/saywich/tripgo/internal/model"
 )
 
-type TxManager interface {
-	Do(ctx context.Context, fn func(ctx context.Context) error) error
-}
+type txKey struct{}
 
-type txKey struct {}
-
-type TransactionManager struct {
+type Manager struct {
 	pool *pgxpool.Pool
 }
 
-func NewTransactionManager(pool *pgxpool.Pool) *TransactionManager {
-	return &TransactionManager{pool: pool}
+func NewManager(pool *pgxpool.Pool) *Manager {
+	return &Manager{pool: pool}
 }
 
-func (m *TransactionManager) Do(
+func (m *Manager) Do(
 	ctx context.Context,
 	fn func(ctx context.Context) error,
 ) error {
@@ -34,10 +32,11 @@ func (m *TransactionManager) Do(
 		IsoLevel: pgx.ReadCommitted,
 	})
 	if err != nil {
-		return fmt.Errorf("Transaction error: %w", err)
+		return fmt.Errorf("transaction error: %w", err)
 	}
 
-	txCtx := context.WithValue(ctx, txKey{}, tx)
+	hookCtx, afterCommit := model.WithCommitHooks(ctx)
+	txCtx := context.WithValue(hookCtx, txKey{}, tx)
 
 	committed := false
 	defer func() {
@@ -56,10 +55,19 @@ func (m *TransactionManager) Do(
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("Transaction error: %w", err)
+		return fmt.Errorf("transaction error: %w", err)
 	}
 
 	committed = true
+	afterCommit()
 
 	return nil
+}
+
+func Executor(ctx context.Context, pool *pgxpool.Pool) DBTX {
+	if tx, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
+		return tx
+	}
+
+	return pool
 }

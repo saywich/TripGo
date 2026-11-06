@@ -1,4 +1,4 @@
-package tripservice
+package transaction
 
 import (
 	"context"

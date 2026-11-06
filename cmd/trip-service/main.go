@@ -3,117 +3,64 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/saywich/tripgo/internal"
+	"github.com/saywich/tripgo/internal/config"
+	"github.com/saywich/tripgo/internal/container"
 )
 
 func main() {
-	config, err := tripservice.ParseEnv()
+	if err := run(); err != nil {
+		slog.Error("service stopped", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	cfg, err := config.ParseEnv()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	poolConfig, err := pgxpool.ParseConfig(config.DatabaseUrl)
+	app, err := container.New(ctx, cfg)
 	if err != nil {
-		log.Printf("parse database configuration: %v", err)
-		return
-	}
-	poolConfig.MaxConns = int32(config.DatabaseMaxConns)
-	poolConfig.MinConns = int32(config.DatabaseMinConns)
-	poolConfig.MaxConnLifetime = config.DatabaseMaxConnLifetime
-	poolConfig.ConnConfig.ConnectTimeout = config.DatabaseConnectTimeout
-
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
-	if err != nil {
-		log.Printf("create database pool: %v", err)
-		return
-	}
-	defer pool.Close()
-
-	pingCtx, cancelPing := context.WithTimeout(ctx, config.DatabaseConnectTimeout)
-	defer cancelPing()
-	if err := pool.Ping(pingCtx); err != nil {
-		log.Printf("connect to database: %v", err)
-		return
+		return err
 	}
 
-	txManager := tripservice.NewTransactionManager(pool)
-	tripRepository := tripservice.NewTripRepository(
-		pool, config.DatabaseQueryTimeout)
-	tripStatusHistoryRepository := tripservice.NewTripStatusHistoryRepository(
-		pool, config.DatabaseQueryTimeout)
-	idempotencyRepository := tripservice.NewIdempotencyRepository(
-		pool, config.DatabaseQueryTimeout, config.IdempotencyKeyRetention)
-	if err := idempotencyRepository.CleanupExpired(ctx); err != nil {
-		log.Printf("cleanup expired idempotency keys: %v", err)
-	}
-	go func() {
-		ticker := time.NewTicker(time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := idempotencyRepository.CleanupExpired(ctx); err != nil {
-					log.Printf("cleanup expired idempotency keys: %v", err)
-				}
-			}
+	defer func() {
+		shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+
+		if err := app.Close(shutdown); err != nil {
+			app.Logger.Error("shutdown telemetry", "error", err)
 		}
 	}()
-	tripService := tripservice.NewTripService(
-		txManager,
-		tripRepository,
-		tripStatusHistoryRepository,
-	)
-	idempotencyMiddleware := tripservice.NewIdempotencyMiddleware(txManager, idempotencyRepository)
-
-	handler := tripservice.NewHTTPHandler(tripService, pool, idempotencyMiddleware.Wrap)
-
-	server := &http.Server{
-		Addr:              config.HttpAddress,
-		Handler:           handler.Routes(),
-		ReadTimeout:       config.HTTPReadTimeout,
-		ReadHeaderTimeout: config.HTTPReadHeaderTimeout,
-		WriteTimeout:      config.HTTPWriteTimeout,
-		IdleTimeout:       config.HTTPIdleTimeout,
-	}
-
-	serverErrors := make(chan error, 1)
-	go func() {
-		serverErrors <- server.ListenAndServe()
-	}()
+	errs := make(chan error, 1)
+	go func() { errs <- app.Server.ListenAndServe() }()
 
 	select {
-	case err := <-serverErrors:
+	case err := <-errs:
 		if !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("HTTP server failed: %v", err)
-
-			return
+			return err
 		}
-
-		return
+		return nil
 	case <-ctx.Done():
-		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), config.ShutdownTimeout)
-		defer cancelShutdown()
-
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("graceful HTTP shutdown failed: %v; forcing shutdown", err)
-			if closeErr := server.Close(); closeErr != nil {
-				log.Printf("force HTTP shutdown failed: %v", closeErr)
-			}
-		}
-
-		return
+		shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		return shutdownServer(shutdown, app.Server)
 	}
+}
+
+func shutdownServer(ctx context.Context, server *http.Server) error {
+	if err := server.Shutdown(ctx); err != nil {
+		return errors.Join(err, server.Close())
+	}
+
+	return nil
 }
