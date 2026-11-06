@@ -1,4 +1,4 @@
-package tripservice
+package trip
 
 import (
 	"context"
@@ -6,48 +6,50 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	sq "github.com/Masterminds/squirrel"
-	openapi_types "github.com/oapi-codegen/runtime/types"
-	api "github.com/saywich/tripgo/internal/generated"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	api "github.com/saywich/tripgo/internal/domain/trip"
+	"github.com/saywich/tripgo/internal/infra/postgres/transaction"
 )
 
-type TripStatusHistoryRepository struct {
-	pool *pgxpool.Pool
+type StatusHistoryRepository struct {
+	pool         *pgxpool.Pool
 	queryTimeout time.Duration
 }
 
-func NewTripStatusHistoryRepository(
+func NewStatusHistoryRepository(
 	pool *pgxpool.Pool,
 	queryTimeout time.Duration,
-) *TripStatusHistoryRepository {
-	return &TripStatusHistoryRepository{pool: pool, queryTimeout: queryTimeout}
+) *StatusHistoryRepository {
+	return &StatusHistoryRepository{pool: pool, queryTimeout: queryTimeout}
 }
 
-func (r *TripStatusHistoryRepository) CreateInitial(
+func (r *StatusHistoryRepository) CreateInitial(
 	ctx context.Context,
-	tripId openapi_types.UUID,
-	toStatus api.TripStatus,
+	tripID uuid.UUID,
+	toStatus api.Status,
 	reason string,
 ) error {
-	return r.create(ctx, tripId, nil, toStatus, reason)
+	return r.create(ctx, tripID, nil, toStatus, reason)
 }
 
-func (r *TripStatusHistoryRepository) Create(
+func (r *StatusHistoryRepository) Create(
 	ctx context.Context,
-	tripId openapi_types.UUID,
-	fromStatus api.TripStatus,
-	toStatus api.TripStatus,
+	tripID uuid.UUID,
+	fromStatus api.Status,
+	toStatus api.Status,
 	reason string,
 ) error {
-	return r.create(ctx, tripId, &fromStatus, toStatus, reason)
+	return r.create(ctx, tripID, &fromStatus, toStatus, reason)
 }
 
-func (r *TripStatusHistoryRepository) create(
+func (r *StatusHistoryRepository) create(
 	ctx context.Context,
-	tripId openapi_types.UUID,
-	fromStatus *api.TripStatus,
-	toStatus api.TripStatus,
+	tripID uuid.UUID,
+	fromStatus *api.Status,
+	toStatus api.Status,
 	reason string,
 ) error {
 	builder := sq.StatementBuilder.
@@ -62,14 +64,14 @@ func (r *TripStatusHistoryRepository) create(
 
 	if fromStatus == nil {
 		builder = builder.Values(
-			tripId,
+			tripID,
 			nil,
 			toStatus,
 			reason,
 		)
 	} else {
 		builder = builder.Values(
-			tripId,
+			tripID,
 			*fromStatus,
 			toStatus,
 			reason,
@@ -77,24 +79,22 @@ func (r *TripStatusHistoryRepository) create(
 	}
 
 	query, args, err := builder.ToSql()
-
 	if err != nil {
 		return fmt.Errorf("trip status history create: %w", err)
 	}
 
-	db := getExecutor(ctx, r.pool)
+	db := transaction.Executor(ctx, r.pool)
 
 	deadlineCtx, cancel := context.WithTimeout(ctx, r.queryTimeout)
 	defer cancel()
 
 	_, err = db.Exec(deadlineCtx, query, args...)
-
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("trip status history create: cancelled by timeout")
-		} else {
-			return fmt.Errorf("trip status history create: %w", err)
 		}
+
+		return fmt.Errorf("trip status history create: %w", err)
 	}
 
 	return nil

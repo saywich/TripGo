@@ -1,4 +1,4 @@
-package tripservice
+package trip
 
 import (
 	"context"
@@ -10,16 +10,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-)
 
-type IdempotencyRecord struct {
-	RequestHash  []byte
-	RequestBody  []byte
-	Status       int
-	ContentType  string
-	Location     string
-	ResponseBody []byte
-}
+	"github.com/saywich/tripgo/internal/infra/postgres/transaction"
+	"github.com/saywich/tripgo/internal/model"
+)
 
 type IdempotencyRepository struct {
 	pool         *pgxpool.Pool
@@ -39,8 +33,8 @@ func (r *IdempotencyRepository) Claim(
 	ctx context.Context,
 	key uuid.UUID,
 	requestHash, requestBody []byte,
-) (bool, IdempotencyRecord, error) {
-	db := getExecutor(ctx, r.pool)
+) (bool, model.IdempotencyRecord, error) {
+	db := transaction.Executor(ctx, r.pool)
 
 	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, r.queryTimeout)
 	defer cleanupCancel()
@@ -50,11 +44,12 @@ func (r *IdempotencyRepository) Claim(
 		Where(sq.Lt{"created_at": time.Now().UTC().Add(-r.retention)}).
 		ToSql()
 	if err != nil {
-		return false, IdempotencyRecord{}, fmt.Errorf("build expired idempotency key cleanup query: %w", err)
+		return false, model.IdempotencyRecord{}, fmt.Errorf("build expired idempotency key cleanup query: %w", err)
 	}
+
 	_, err = db.Exec(cleanupCtx, cleanupQuery, cleanupArgs...)
 	if err != nil {
-		return false, IdempotencyRecord{}, fmt.Errorf("remove expired idempotency key: %w", err)
+		return false, model.IdempotencyRecord{}, fmt.Errorf("remove expired idempotency key: %w", err)
 	}
 
 	builder := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
@@ -65,7 +60,7 @@ func (r *IdempotencyRepository) Claim(
 		Suffix("ON CONFLICT (key) DO NOTHING RETURNING key").
 		ToSql()
 	if err != nil {
-		return false, IdempotencyRecord{}, fmt.Errorf("build idempotency claim query: %w", err)
+		return false, model.IdempotencyRecord{}, fmt.Errorf("build idempotency claim query: %w", err)
 	}
 
 	var insertedKey uuid.UUID
@@ -74,26 +69,28 @@ func (r *IdempotencyRepository) Claim(
 	defer insertCancel()
 
 	err = db.QueryRow(insertDeadlineCtx, query, args...).Scan(&insertedKey)
+
 	if err == nil {
-		return true, IdempotencyRecord{}, nil
+		return true, model.IdempotencyRecord{}, nil
 	}
+
 	if errors.Is(err, context.DeadlineExceeded) {
-		return false, IdempotencyRecord{}, fmt.Errorf("claim idempotency key: cancelled by timeout")
+		return false, model.IdempotencyRecord{}, fmt.Errorf("claim idempotency key: cancelled by timeout")
 	}
+
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return false, IdempotencyRecord{}, fmt.Errorf("claim idempotency key: %w", err)
+		return false, model.IdempotencyRecord{}, fmt.Errorf("claim idempotency key: %w", err)
 	}
 
 	query, args, err = builder.Select(
 		"request_hash", "request_body", "response_status",
 		"response_content_type", "response_location", "response_body",
 	).From("idempotency_requests").Where(sq.Eq{"key": key}).ToSql()
-
 	if err != nil {
-		return false, IdempotencyRecord{}, fmt.Errorf("build idempotency lookup query: %w", err)
+		return false, model.IdempotencyRecord{}, fmt.Errorf("build idempotency lookup query: %w", err)
 	}
 
-	var record IdempotencyRecord
+	var record model.IdempotencyRecord
 
 	lookupDeadlineCtx, lookupCancel := context.WithTimeout(ctx, r.queryTimeout)
 	defer lookupCancel()
@@ -108,10 +105,10 @@ func (r *IdempotencyRepository) Claim(
 	)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return false, IdempotencyRecord{}, fmt.Errorf("load idempotency key: cancelled by timeout")
-		} else {
-			return false, IdempotencyRecord{}, fmt.Errorf("load idempotency key: %w", err)
+			return false, model.IdempotencyRecord{}, fmt.Errorf("load idempotency key: cancelled by timeout")
 		}
+
+		return false, model.IdempotencyRecord{}, fmt.Errorf("load idempotency key: %w", err)
 	}
 
 	return false, record, nil
@@ -133,6 +130,7 @@ func (r *IdempotencyRepository) CleanupExpired(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cleanup expired idempotency keys: %w", err)
 	}
+
 	return nil
 }
 
@@ -151,7 +149,6 @@ func (r *IdempotencyRepository) Complete(
 		Set("response_body", responseBody).
 		Where(sq.Eq{"key": key}).
 		ToSql()
-
 	if err != nil {
 		return fmt.Errorf("build idempotency completion query: %w", err)
 	}
@@ -159,13 +156,15 @@ func (r *IdempotencyRepository) Complete(
 	deadlineCtx, cancel := context.WithTimeout(ctx, r.queryTimeout)
 	defer cancel()
 
-	tag, err := getExecutor(ctx, r.pool).Exec(deadlineCtx, query, args...)
+	tag, err := transaction.Executor(ctx, r.pool).Exec(deadlineCtx, query, args...)
 	if err != nil {
 		return fmt.Errorf("complete idempotency key: %w", err)
 	}
+
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("complete idempotency key: cancelled by timeout")
 	}
+
 	if tag.RowsAffected() != 1 {
 		return errors.New("complete idempotency key: key not found")
 	}
