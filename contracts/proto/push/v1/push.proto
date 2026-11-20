@@ -7,8 +7,6 @@ option go_package = "github.com/course-go-autumn-2026/homework/gen/push/v1;pushv
 import "google/protobuf/timestamp.proto";
 
 service PushService {
-  // Принимает команду на отправку push-уведомления.
-  // Реальная интеграция с APNs/FCM в учебный scope не входит.
   rpc SendPush(SendPushRequest) returns (SendPushResponse);
 }
 
