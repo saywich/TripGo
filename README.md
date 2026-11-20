@@ -2,25 +2,6 @@
 
 HTTP-сервис на Go для создания поездок, поиска поездки по ID и её завершения. Сервис хранит поездки и историю их статусов в PostgreSQL.
 
-## Требования
-
-- Go 1.25.4 или совместимая версия.
-- PostgreSQL. Для окружения курса используйте `tripgoctl` и файл `environment.toml` из этого репозитория.
-- `goose` для управления миграциями.
-- `golangci-lint` для запуска линтера.
-
-## Запуск локального окружения
-
-Установите и настройте `tripgoctl` согласно [инструкции курса](https://github.com/course-go-autumn-2026/course/blob/main/homework/docs/getting-started.md), затем из корня репозитория выполните:
-
-```bash
-tripgoctl cluster start
-tripgoctl environment start
-tripgoctl connect
-```
-
-`tripgoctl environment start` создаёт локальный `.env` с адресом PostgreSQL и остальными параметрами. `.env` не коммитится. Если вы запускаете сервис со своей базой, скопируйте `.env.example` в `.env` и укажите рабочий `DATABASE_URL`.
-
 ## Переменные окружения
 
 Переменные в таблице ниже обязательны. Сервис завершает запуск с ошибкой, если переменная отсутствует или имеет неверный формат. Настройки OpenTelemetry перечислены отдельно.
@@ -42,10 +23,6 @@ tripgoctl connect
 | `DATABASE_QUERY_TIMEOUT` | Таймаут запросов к PostgreSQL | `3s` |
 | `IDEMPOTENCY_KEY_RETENTION` | Срок хранения ключей идемпотентности | `24h` |
 
-Актуальный шаблон находится в [.env.example](.env.example). Таймауты и максимальное число соединений должны быть положительными; `DATABASE_MIN_CONNS` допускает ноль и не должно превышать `DATABASE_MAX_CONNS`.
-
-Настройки телеметрии для запуска на хосте с окружением `tripgo-lab-03`:
-
 | Переменная | Значение |
 |---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:23318` — сверить с `tripgoctl connect` |
@@ -53,8 +30,6 @@ tripgoctl connect
 | `OTEL_TRACES_SAMPLER` | `parentbased_always_on` |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `1000` мс для локальной проверки |
 | `OTEL_BSP_SCHEDULE_DELAY` | `1000` мс для локальной проверки |
-
-SDK допускает значения по умолчанию, но endpoint необходимо настроить на коллектор своего окружения.
 
 ## Миграции и запуск
 
@@ -71,22 +46,12 @@ make run
 
 ## Docker
 
-Сборка использует многоступенчатый Dockerfile: приложение компилируется в Go builder-образе, а итоговый образ содержит только статический бинарник и сертификаты CA. Контейнер запускается от непривилегированного пользователя.
-
 ```bash
 docker build -f deploy/Dockerfile -t tripgo-trip-service .
 
 docker compose -f deploy/compose.yaml up -d --build
 docker compose -f deploy/compose.yaml logs -f
 ```
-
-Для окружения `tripgo-lab-03` Compose переопределяет адреса из `.env`:
-PostgreSQL — `host.docker.internal:23032`, OTLP HTTP —
-`http://host.docker.internal:23318`, Push Service — `http://host.docker.internal:23809`. В Docker Desktop это адрес хоста;
-`localhost` внутри контейнера указывал бы на сам контейнер сервиса.
-При запуске через `make run` используются адреса `localhost` из `.env`.
-Если утилита изменит порты, обновите их в `deploy/compose.yaml` по выводу
-`tripgoctl connect`.
 
 ## Реализовано
 
@@ -99,8 +64,6 @@ PostgreSQL — `host.docker.internal:23032`, OTLP HTTP —
 | `GET /api/v1/trips/{tripId}/positions` | Возвращает все точки маршрута, включая пустой список для поездки без точек. Сортировка по `recorded_at`, затем по `id`. |
 | `GET /health` | Проверка liveness процесса. |
 | `GET /ready` | Проверяет подключение к PostgreSQL; возвращает `503`, если база недоступна. |
-
-Описание HTTP-контракта находится в [contracts/openapi/trip-service.openapi.yaml](contracts/openapi/trip-service.openapi.yaml). Контракты курса и схему таблиц не редактируйте; таблицы создаются миграциями.
 
 ### Основные решения
 
@@ -119,8 +82,6 @@ make lint
 ```
 
 `make test` запускает тесты с `-race` и печатает покрытие. `make lint` запускает `golangci-lint`. Также можно проверить компиляцию командой `go build ./...`.
-
-Unit-тесты и интеграционные сценарии описаны ниже.
 
 ## Структура проекта
 
@@ -172,21 +133,6 @@ SQL или OpenTelemetry. Отдельный `model` содержит запис
 Логгер — `slog`, JSON в stdout, уровень `LOG_LEVEL` (`INFO`, `DEBUG`, `WARN`,
 `ERROR`). Handler добавляет `trace_id` и `span_id` из контекста каждой записи.
 Бизнес-события пишутся после фактического коммита транзакции, включая внешнюю транзакцию идемпотентности.
-
-Экспорт OTLP настраивается:
-
-```sh
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:23318
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-export OTEL_TRACES_SAMPLER=parentbased_always_on
-```
-
-HTTP: Recover → Tracing → Logging → Metrics → router. Маршрут предварительно
-сопоставляется с шаблоном без выполнения обработчика. В метрики и имя спана
-попадает шаблон, никогда UUID или query string. Recover расположен снаружи Tracing. Logging и Metrics завершаются через defer
-при панике, сохраняя статус 500. Ответ буферизуется, чтобы Recover мог заменить
-даже частично подготовленный JSON на единый internal_error. Контекст спана
-сохраняется для записи паники со stack trace.
 
 | Сигнал | Тип, единица | Атрибуты |
 | --- | --- | --- |
@@ -253,9 +199,3 @@ PostgreSQL сохраняет максимум из прежнего време�
 результатов проверок и отправок доступны в Prometheus. В Jaeger спан отправки
 HTTP находится внутри спана задачи. Спан задачи связан со сканированием
 через span link.
-
-Материалы проверки лежат в `docs/lab03/`.
-
-- [План обычной и батчевой выборки на 6000 поездках](docs/lab03/explain.txt)
-- [График очереди и занятых воркеров в Prometheus](docs/lab03/prometheus.jpg)
-- [Результаты прогона с Push Service](docs/lab03/smoke.txt)
