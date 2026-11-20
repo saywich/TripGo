@@ -3,25 +3,31 @@ package container
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel"
 
 	"github.com/saywich/tripgo/internal/config"
+	"github.com/saywich/tripgo/internal/gateway/push"
 	"github.com/saywich/tripgo/internal/http/middleware"
 	createhttp "github.com/saywich/tripgo/internal/http/trip/create"
 	finishhttp "github.com/saywich/tripgo/internal/http/trip/finish"
 	gethttp "github.com/saywich/tripgo/internal/http/trip/get"
+	positionshttp "github.com/saywich/tripgo/internal/http/trip/positions"
 	"github.com/saywich/tripgo/internal/infra/postgres/transaction"
 	"github.com/saywich/tripgo/internal/infra/telemetry"
 	repo "github.com/saywich/tripgo/internal/repository/trip"
 	createuc "github.com/saywich/tripgo/internal/usecase/trip/create"
 	finishuc "github.com/saywich/tripgo/internal/usecase/trip/finish"
 	getuc "github.com/saywich/tripgo/internal/usecase/trip/get"
+	positionsuc "github.com/saywich/tripgo/internal/usecase/trip/positions"
 	"github.com/saywich/tripgo/internal/worker/idempotency"
+	"github.com/saywich/tripgo/internal/worker/positions"
 )
 
 type Container struct {
@@ -76,8 +82,6 @@ func New(ctx context.Context, c *config.Config) (*Container, error) {
 	trips := repo.NewRepository(pool, c.DatabaseQueryTimeout)
 	history := repo.NewStatusHistoryRepository(pool, c.DatabaseQueryTimeout)
 	idem := repo.NewIdempotencyRepository(pool, c.DatabaseQueryTimeout, c.IdempotencyKeyRetention)
-	worker := idempotency.New(idem, logger)
-	go worker.Run(ctx)
 	meter := otel.Meter("trip-service")
 	created, err := meter.Int64Counter("tripgo.trips.created")
 	if err != nil {
@@ -121,8 +125,43 @@ func New(ctx context.Context, c *config.Config) (*Container, error) {
 		"/api/v1/trips/{tripID}/finish",
 		finishhttp.New(finishuc.New(trips, tx, history, logger, completed)))
 
+	positionConfig := c.Positions
+	positionTracer := otel.Tracer("trip-service/positions")
+
+	saved, err := meter.Int64Counter("tripgo.positions.saved")
+	if err != nil {
+		_ = closeAll(ctx)
+		return nil, err
+	}
+
+	pushClient, err := push.New(positionConfig.PushURL, positionConfig.RequestTimeout, positionTracer, otel.GetTextMapPropagator())
+	if err != nil {
+		_ = closeAll(ctx)
+		return nil, err
+	}
+
+	positionPool, err := positions.New(trips, pushClient, positions.Config{
+		StaleAfter:     positionConfig.StaleAfter,
+		RequestTimeout: positionConfig.RequestTimeout,
+		Workers:        positionConfig.Workers,
+		Capacity:       positionConfig.QueueSize,
+		BatchSize:      positionConfig.BatchSize,
+		Priority:       positionConfig.Priority,
+	}, logger, positionTracer, meter)
+	if err != nil {
+		pushClient.Close()
+		_ = closeAll(ctx)
+		return nil, err
+	}
+
+	positionsHandler := positionshttp.New(positionsuc.New(trips, tx, positionPool, saved, time.Now), logger)
+	const positionsRoute = "/api/v1/trips/{tripID}/positions"
+	router.Get(positionsRoute, positionsHandler.List)
+	router.Post(positionsRoute, positionsHandler.Save)
+
 	handler, err := middleware.Wrap(router, logger, meter)
 	if err != nil {
+		pushClient.Close()
 		_ = closeAll(ctx)
 
 		return nil, err
@@ -135,6 +174,16 @@ func New(ctx context.Context, c *config.Config) (*Container, error) {
 		handler.ServeHTTP(w, r)
 	})
 
+	lifetime := context.WithoutCancel(ctx)
+	stopPositions := positionPool.Start(lifetime, positions.ClockTicker{Ticker: time.NewTicker(positionConfig.CheckInterval)})
+	idemCtx, stopIdempotency := context.WithCancel(lifetime)
+	idemDone := make(chan struct{})
+
+	go func() {
+		defer close(idemDone)
+		idempotency.New(idem, logger).Run(idemCtx)
+	}()
+
 	return &Container{
 		Server: &http.Server{
 			Addr:              c.HTTPAddress,
@@ -145,6 +194,13 @@ func New(ctx context.Context, c *config.Config) (*Container, error) {
 			IdleTimeout:       c.HTTPIdleTimeout,
 		},
 		Logger: logger,
-		Close:  closeAll,
+		Close: func(ctx context.Context) error {
+			stopIdempotency()
+			err := stopPositions(ctx)
+			<-idemDone
+
+			pushClient.Close()
+			return errors.Join(err, closeAll(ctx))
+		},
 	}, nil
 }

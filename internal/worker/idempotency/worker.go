@@ -16,6 +16,9 @@ type Worker struct {
 func New(repo repository, logger *slog.Logger) *Worker { return &Worker{repo, logger} }
 
 func (w *Worker) Run(ctx context.Context) {
+	w.logger.InfoContext(ctx, "idempotency cleanup started")
+	defer w.logger.InfoContext(ctx, "idempotency cleanup stopped")
+
 	w.cleanup(ctx)
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()

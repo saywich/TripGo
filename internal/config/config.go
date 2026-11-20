@@ -26,6 +26,7 @@ var requiredVariables = [...]string{
 }
 
 type Config struct {
+	Positions               Positions
 	HTTPAddress             string
 	HTTPReadTimeout         time.Duration
 	HTTPReadHeaderTimeout   time.Duration
@@ -166,5 +167,11 @@ func ParseEnv() (*Config, error) {
 		return nil, fmt.Errorf("database timeouts must be positive")
 	}
 
+	positions, err := parsePositions()
+	if err != nil {
+		return nil, err
+	}
+
+	config.Positions = positions
 	return &config, nil
 }

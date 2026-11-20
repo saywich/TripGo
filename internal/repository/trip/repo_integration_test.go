@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -36,11 +37,7 @@ func TestRepository(t *testing.T) {
 	h := repo.NewStatusHistoryRepository(pool, 5*time.Second)
 	tx := transaction.NewManager(pool)
 	data := trip.Data{UserID: uuid.New(), DriverID: uuid.New(), Price: 100}
-	t.Cleanup(func() {
-		if _, err := pool.Exec(ctx, "DELETE FROM trips WHERE driver_id=$1", data.DriverID); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { deleteTripsByDriver(t, ctx, pool, data.DriverID) })
 	var saved trip.Trip
 	err = tx.Do(ctx, func(ctx context.Context) error {
 		var err error
@@ -95,11 +92,7 @@ func TestRollbackBothTables(t *testing.T) {
 	tx := transaction.NewManager(pool)
 	driver := uuid.New()
 	var id uuid.UUID
-	t.Cleanup(func() {
-		if _, err := pool.Exec(ctx, "DELETE FROM trips WHERE driver_id=$1", driver); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { deleteTripsByDriver(t, ctx, pool, driver) })
 	err = tx.Do(ctx, func(ctx context.Context) error {
 		v, err := r.Create(ctx, trip.Data{UserID: uuid.New(), DriverID: driver})
 		if err != nil {
@@ -123,21 +116,47 @@ func TestRollbackBothTables(t *testing.T) {
 		t.Fatal("trip insert failed before rollback scenario")
 	}
 
-	for _, table := range []string{"trips", "trip_status_history"} {
-		var count int
-		query := "SELECT count(*) FROM trips WHERE id=$1"
-
-		if table == "trip_status_history" {
-			query = "SELECT count(*) FROM trip_status_history WHERE trip_id=$1"
+	for _, entry := range []struct {
+		table  string
+		column string
+	}{
+		{"trips", "id"},
+		{"trip_status_history", "trip_id"},
+	} {
+		query, args, err := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+			Select("count(*)").
+			From(entry.table).
+			Where(sq.Eq{entry.column: id}).
+			ToSql()
+		if err != nil {
+			t.Fatal(err)
 		}
 
-		if err := pool.QueryRow(ctx, query, id).Scan(&count); err != nil {
+		var count int
+		if err := pool.QueryRow(ctx, query, args...).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 
 		if count != 0 {
-			t.Fatalf("%s has %d uncommitted rows", table, count)
+			t.Fatalf("%s has %d uncommitted rows", entry.table, count)
 		}
+	}
+}
+
+func deleteTripsByDriver(t *testing.T, ctx context.Context, pool *pgxpool.Pool, driver uuid.UUID) {
+	t.Helper()
+
+	query, args, err := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Delete("trips").
+		Where(sq.Eq{"driver_id": driver}).
+		ToSql()
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	if _, err := pool.Exec(ctx, query, args...); err != nil {
+		t.Error(err)
 	}
 }
 

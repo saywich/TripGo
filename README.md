@@ -33,7 +33,7 @@ tripgoctl connect
 | `HTTP_WRITE_TIMEOUT` | Максимальное время отправки ответа | `10s` |
 | `HTTP_IDLE_TIMEOUT` | Максимальное время ожидания следующего запроса keep-alive | `60s` |
 | `LOG_LEVEL` | Уровень логирования | `info` |
-| `SHUTDOWN_TIMEOUT` | Лимит на завершение HTTP-сервера | `10s` |
+| `SHUTDOWN_TIMEOUT` | Общий лимит на завершение сервиса | `10s` |
 | `DATABASE_URL` | Строка подключения PostgreSQL | `postgres://user:pass@localhost:5432/tripgo?sslmode=disable` |
 | `DATABASE_MAX_CONNS` | Максимум соединений в пуле | `10` |
 | `DATABASE_MIN_CONNS` | Минимум соединений в пуле | `2` |
@@ -44,11 +44,11 @@ tripgoctl connect
 
 Актуальный шаблон находится в [.env.example](.env.example). Таймауты и максимальное число соединений должны быть положительными; `DATABASE_MIN_CONNS` допускает ноль и не должно превышать `DATABASE_MAX_CONNS`.
 
-Настройки телеметрии для запуска на хосте с окружением `tripgo-lab-02`:
+Настройки телеметрии для запуска на хосте с окружением `tripgo-lab-03`:
 
 | Переменная | Значение |
 |---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:22318` — сверить с `tripgoctl connect` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:23318` — сверить с `tripgoctl connect` |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` |
 | `OTEL_TRACES_SAMPLER` | `parentbased_always_on` |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `1000` мс для локальной проверки |
@@ -67,7 +67,7 @@ make run
 
 Сервис слушает адрес из `HTTP_ADDR`. Для миграций доступны также `make migrate-status` и `make migrate-down`. Все изменения схемы выполняются Goose-миграциями из `migrations/`.
 
-Чтобы остановить сервис, отправьте `SIGINT` или `SIGTERM` (например, нажмите `Ctrl+C`). HTTP-сервер прекращает принимать новые запросы и ждёт текущие в пределах `SHUTDOWN_TIMEOUT`; если время истекло, активные соединения закрываются принудительно, после чего закрывается пул PostgreSQL.
+Чтобы остановить сервис, отправьте `SIGINT` или `SIGTERM` (например, нажмите `Ctrl+C`). Сервер дожидается текущих HTTP-запросов, затем останавливает сканер. Воркеры разбирают очередь, после чего сервис закрывает Push-клиент и пул PostgreSQL. Все этапы используют общий бюджет `SHUTDOWN_TIMEOUT`. По истечении срока активные запросы отменяются.
 
 ## Docker
 
@@ -80,9 +80,9 @@ docker compose -f deploy/compose.yaml up -d --build
 docker compose -f deploy/compose.yaml logs -f
 ```
 
-Для окружения `tripgo-lab-02` Compose переопределяет адреса из `.env`:
-PostgreSQL — `host.docker.internal:22032`, OTLP HTTP —
-`http://host.docker.internal:22318`. В Docker Desktop это адрес хоста;
+Для окружения `tripgo-lab-03` Compose переопределяет адреса из `.env`:
+PostgreSQL — `host.docker.internal:23032`, OTLP HTTP —
+`http://host.docker.internal:23318`, Push Service — `http://host.docker.internal:23809`. В Docker Desktop это адрес хоста;
 `localhost` внутри контейнера указывал бы на сам контейнер сервиса.
 При запуске через `make run` используются адреса `localhost` из `.env`.
 Если утилита изменит порты, обновите их в `deploy/compose.yaml` по выводу
@@ -95,6 +95,8 @@ PostgreSQL — `host.docker.internal:22032`, OTLP HTTP —
 | `POST /api/v1/trips` | Создаёт активную поездку и запись истории статуса. Возвращает `201` и `Location`. Если у водителя уже есть активная поездка, возвращает `409` с кодом `driver_busy`. При повторе с тем же `Idempotency-Key` и телом в течение `IDEMPOTENCY_KEY_RETENTION` возвращает сохранённый ответ с `200`; тот же ключ с другим телом даёт `409 idempotency_conflict`. По истечении срока ключ можно использовать повторно. |
 | `GET /api/v1/trips/{tripId}` | Возвращает поездку; отвечает `400` для некорректного UUID и `404`, если поездка не найдена. |
 | `POST /api/v1/trips/{tripId}/finish` | Завершает активную поездку и записывает переход статуса в той же транзакции. Повторное завершение возвращает `409`, неизвестный ID — `404`. |
+| `POST /api/v1/trips/{tripId}/positions` | Сохраняет точку активной поездки и обновляет время последней координаты. Возвращает `201`, ошибки валидации — `400`, неизвестная поездка — `404`, завершённая — `409`. |
+| `GET /api/v1/trips/{tripId}/positions` | Возвращает все точки маршрута, включая пустой список для поездки без точек. Сортировка по `recorded_at`, затем по `id`. |
 | `GET /health` | Проверка liveness процесса. |
 | `GET /ready` | Проверяет подключение к PostgreSQL; возвращает `503`, если база недоступна. |
 
@@ -174,7 +176,7 @@ SQL или OpenTelemetry. Отдельный `model` содержит запис
 Экспорт OTLP настраивается:
 
 ```sh
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:22318
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:23318
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 export OTEL_TRACES_SAMPLER=parentbased_always_on
 ```
@@ -199,4 +201,61 @@ HTTP: Recover → Tracing → Logging → Metrics → router. Маршрут п�
 и тела HTTP не экспортируются. На серверных ошибках HTTP спан получает Error
 и `error.type=internal_error`. База использует `database_error`.
 
+## Опрос устаревших поездок
 
+```text
+PostgreSQL → сканер по тикеру → ограниченная очередь → воркеры → Push Service
+POST /positions → коммит в PostgreSQL → отмена ожидающего пуша
+```
+
+Сохранение точки и обновление `last_position_at` идут в одной транзакции.
+PostgreSQL сохраняет максимум из прежнего времени и `recorded_at` новой точки,
+поэтому опоздавшая точка попадает в маршрут и сохраняет более свежую отметку.
+
+Сканер ищет только активные поездки. Сравнение времени происходит в PostgreSQL
+по `COALESCE(last_position_at, started_at)`. Поездки, которые дольше всего
+ждут координату, идут первыми. Пока задача ждёт или обрабатывается, повторная
+постановка той же поездки даёт `duplicate`.
+
+При переполнении FIFO-очереди сканер сразу учитывает `dropped` и пишет `Warn`.
+Поездка остаётся в базе, поэтому следующий тик может подобрать её снова.
+После коммита координаты воркер пропустит отменённую задачу. В FIFO она
+освобождает место, когда воркер вычитает её из канала. Уже начатый пуш
+завершается в пределах своего таймаута.
+
+На каждую задачу приходится одна попытка отправить `REQUEST_POSITION`.
+Если устройство не ответило, поездка может снова попасть в очередь на
+следующем тике. Период тикера задаёт частоту проверок. Фактическое время
+между отправками зависит от ожидания в очереди.
+
+| Переменная | По умолчанию | Назначение |
+| --- | --- | --- |
+| `POSITION_CHECK_INTERVAL` | `30s` | Пауза между тиками сканера |
+| `POSITION_STALE_AFTER` | `60s` | Порог устаревания координаты |
+| `POSITION_WORKERS` | `4` | Число воркеров |
+| `POSITION_QUEUE_SIZE` | `100` | Ёмкость очереди |
+| `PUSH_HTTP_URL` | из `.env` от `tripgoctl` | Базовый HTTP-адрес Push Service |
+| `PUSH_REQUEST_TIMEOUT` | `1s` | Лимит одной отправки |
+| `SHUTDOWN_TIMEOUT` | из `.env` | Общий бюджет остановки |
+| `POSITION_BATCHED_SCAN` | `false` | Включить выборку порциями |
+| `POSITION_SCAN_BATCH_SIZE` | `100` | Размер батча при включённой выборке порциями |
+| `POSITION_PRIORITY_QUEUE` | `false` | Включить очередь с приоритетом |
+
+В режиме батчей сканер продолжает выборку по паре «время, ID» и прекращает
+обход на первом `dropped`. Гистограмма `tripgo.stale_checks.rows_read`
+показывает, сколько строк он прочитал за тик. Приоритетная очередь учитывает
+возраст задач между тиками. Если она полна, более старая задача вытесняет
+самую свежую. При сохранении координаты ожидающая задача удаляется сразу.
+
+После `tripgoctl environment start` и `tripgoctl connect` выполни
+`make migrate`, затем `make run`. Доставку команды можно проверить через
+`tripgoctl environment logs push-service`. Метрики очереди, занятых воркеров,
+результатов проверок и отправок доступны в Prometheus. В Jaeger спан отправки
+HTTP находится внутри спана задачи. Спан задачи связан со сканированием
+через span link.
+
+Материалы проверки лежат в `docs/lab03/`.
+
+- [План обычной и батчевой выборки на 6000 поездках](docs/lab03/explain.txt)
+- [График очереди и занятых воркеров в Prometheus](docs/lab03/prometheus.jpg)
+- [Результаты прогона с Push Service](docs/lab03/smoke.txt)

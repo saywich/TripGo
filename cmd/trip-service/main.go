@@ -28,33 +28,34 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
 	app, err := container.New(ctx, cfg)
 	if err != nil {
 		return err
 	}
 
-	defer func() {
-		shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		defer cancel()
+	app.Logger.Info("trip service started", "address", cfg.HTTPAddress)
+	defer app.Logger.Info("trip service stopped")
 
-		if err := app.Close(shutdown); err != nil {
-			app.Logger.Error("shutdown telemetry", "error", err)
-		}
-	}()
 	errs := make(chan error, 1)
 	go func() { errs <- app.Server.ListenAndServe() }()
 
+	var serveErr error
 	select {
 	case err := <-errs:
 		if !errors.Is(err, http.ErrServerClosed) {
-			return err
+			serveErr = err
 		}
-		return nil
 	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		defer cancel()
-		return shutdownServer(shutdown, app.Server)
 	}
+
+	shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+
+	serverErr := shutdownServer(shutdown, app.Server)
+	closeErr := app.Close(shutdown)
+
+	return errors.Join(serveErr, serverErr, closeErr)
 }
 
 func shutdownServer(ctx context.Context, server *http.Server) error {

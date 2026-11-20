@@ -33,7 +33,7 @@ lint:
 	golangci-lint run
 
 generate:
-	go generate ./internal/usecase/... ./internal/http/trip/...
+	go generate ./internal/usecase/... ./internal/http/trip/... ./internal/worker/positions
 	go tool oapi-codegen \
 	  -generate types,chi-server \
 	  -package api \
